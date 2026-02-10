@@ -2,85 +2,67 @@ import streamlit as st
 import pandas as pd
 import requests
 
-# --- 1. CONFIGURACIÓ ---
-st.set_page_config(page_title="Visor Contractes Públics", page_icon="🔍", layout="wide")
+# 1. CONFIGURACIÓ DE LA PÀGINA
+st.set_page_config(page_title="Monitor de Contractes", page_icon="💰", layout="wide")
 
-st.title("🔍 Cercador de Contractes Públics (Versió 2026)")
-st.markdown("""
-Aquesta versió utilitza **cerca fragmentada** per trobar noms amb accents o lletres diferents.
-_Exemple: Prova 'Incasol', 'Agbar' o 'Menjador'._
-""")
+st.title("💰 Monitor de Contractes Públics")
+st.markdown("Cerca en temps real al registre oficial de la Generalitat de Catalunya.")
 
-# --- 2. MOTOR DE CERCA ROBUST ---
-@st.cache_data(ttl=600)
-def buscar_contractes_robust(text_usuari):
-    endpoint = "https://analisi.transparenciacatalunya.cat/resource/jx2x-848j.json"
+# 2. CONFIGURACIÓ DE LA BASE DE DADES
+# Aquesta és l'adreça oficial (ID: jx2x-848j)
+ENDPOINT = "https://analisi.transparenciacatalunya.cat/resource/jx2x-848j.json"
+
+def cercar_dades(text):
+    # Preparem la consulta de forma segura
+    # Busquem el text a la columna 'adjudicatari' (l'empresa)
+    filtre = f"upper(adjudicatari) like '%{text.upper()}%' or upper(objecte_del_contracte) like '%{text.upper()}%'"
     
-    # Netegem el text i el dividim en paraules
-    paraules = text_usuari.strip().upper().split()
-    if not paraules:
-        return pd.DataFrame()
-
-    # Creem una consulta que busqui CADA paraula a l'adjudicatari o a l'objecte
-    # Això ignora els accents perquè busquem trossos de paraula
-    condicions = []
-    for p in paraules:
-        condicions.append(f"(upper(adjudicatari) like '%{p}%' or upper(objecte_del_contracte) like '%{p}%')")
-    
-    where_clause = " AND ".join(condicions)
-    query = f"?$where={where_clause}&$limit=100&$order=data_formalitzaci_del_contracte DESC"
+    parametres = {
+        "$where": filtre,
+        "$limit": 50,
+        "$order": "data_formalitzaci_del_contracte DESC"
+    }
     
     try:
-        url_final = endpoint + query
-        resposta = requests.get(url_final)
+        # Fem la petició passant els paràmetres per separat (això evita el 404)
+        resposta = requests.get(ENDPOINT, params=parametres)
         
         if resposta.status_code == 200:
             return pd.DataFrame(resposta.json())
         else:
-            st.error(f"Error de l'API: {resposta.status_code}")
+            st.error(f"Error de la Generalitat: {resposta.status_code}")
             return pd.DataFrame()
     except Exception as e:
         st.error(f"Error de connexió: {e}")
         return pd.DataFrame()
 
-# --- 3. INTERFÍCIE ---
+# 3. INTERFÍCIE D'USUARI
+cerca = st.text_input("🔍 Escriu el nom de l'empresa o concepte:", placeholder="Ex: Incasol, Telefonica, Menjador...")
 
-text_usuari = st.text_input("✍️ Què vols buscar?", placeholder="Escriu el nom de l'empresa o el servei...")
-
-if text_usuari:
-    with st.spinner("Connectant amb el registre de la Generalitat..."):
-        df = buscar_contractes_robust(text_usuari)
+if cerca:
+    with st.spinner('Buscant dades oficials...'):
+        df = cercar_dades(cerca)
         
         if not df.empty:
-            # Netegem els noms de les columnes per si de cas
-            # Columnes clau: 'adjudicatari', 'objecte_del_contracte', 'import_adjudicaci_amb_iva'
+            st.balloons()
             
+            # Netegem la columna de diners
             if 'import_adjudicaci_amb_iva' in df.columns:
                 df['import_adjudicaci_amb_iva'] = pd.to_numeric(df['import_adjudicaci_amb_iva'], errors='coerce')
+                total = df['import_adjudicaci_amb_iva'].sum()
                 
-                total_euros = df['import_adjudicaci_amb_iva'].sum()
+                # Resum
+                st.metric("Total adjudicat en aquesta cerca", f"{total:,.2f} €".replace(",", "X").replace(".", ",").replace("X", "."))
                 
-                st.balloons() # Celebrem que hem trobat dades!
+                # Taula neta
+                cols_interessants = ['data_formalitzaci_del_contracte', 'adjudicatari', 'objecte_del_contracte', 'import_adjudicaci_amb_iva']
+                existing_cols = [c for c in cols_interessants if c in df.columns]
                 
-                c1, c2 = st.columns(2)
-                c1.metric("Volum de la mostra", f"{total_euros:,.2f} €")
-                c2.metric("Contractes trobats", len(df))
-                
-                st.subheader("📋 Llistat detallat")
-                
-                # Columnes que volem mostrar
-                cols = ['data_formalitzaci_del_contracte', 'adjudicatari', 'objecte_del_contracte', 'import_adjudicaci_amb_iva']
-                cols_reals = [c for c in cols if c in df.columns]
-                
-                st.dataframe(
-                    df[cols_reals].style.format({"import_adjudicaci_amb_iva": "{:,.2f} €"}),
-                    use_container_width=True
-                )
+                st.dataframe(df[existing_cols], use_container_width=True)
             else:
-                st.warning("Dades trobades, però sense columna d'import. Mostrant dades brutes:")
-                st.write(df.head())
+                st.write("Dades trobades:", df)
         else:
-            st.warning("❌ No hem trobat res. Consell: Escriu només una paraula clau (ex: 'SÒL' en lloc de tota l'adreça).")
+            st.warning("⚠️ No s'ha trobat res. Prova amb una sola paraula (ex: en lloc de 'Institut Catala del Sol' posa només 'SOL').")
 
 st.divider()
-st.caption("Dades obertes: jx2x-848j (Generalitat de Catalunya)")
+st.caption("Font: analisi.transparenciacatalunya.cat (Dataset jx2x-848j)")
