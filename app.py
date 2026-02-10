@@ -2,25 +2,24 @@ import streamlit as st
 import pandas as pd
 import requests
 import altair as alt
-import streamlit.components.v1 as components # Necessari per fer l'auto-scroll
+import streamlit.components.v1 as components
 
-# 1. CONFIGURACIÓ
-st.set_page_config(page_title="Monitor 2026", page_icon="📊", layout="wide")
+# 1. CONFIGURACIÓ DE LA PÀGINA
+st.set_page_config(page_title="Monitor Contractes 2026", page_icon="📊", layout="wide")
 
 st.title("📊 Monitor de Contractació Pública 2026")
-st.markdown("Dades oficials de la Generalitat de Catalunya (Dataset: ybgg-dgi6).")
+st.markdown("Dades oficials de la Generalitat de Catalunya (Dataset: **ybgg-dgi6**)")
 
-# 2. FUNCIÓ PER NETEJAR ENLLAÇOS
+# 2. FUNCIONS DE SUPORT
 def netejar_enllac(valor):
     if isinstance(valor, dict):
         return valor.get('url', '')
     return str(valor) if pd.notna(valor) else ''
 
-# 3. CÀRREGA DE DADES
 @st.cache_data(ttl=3600)
 def carregar_dades_2026():
     url = "https://analisi.transparenciacatalunya.cat/resource/ybgg-dgi6.json"
-    # Filtrem contractes del 2026
+    # Carreguem dades del 2026
     query = "?$where=data_adjudicacio_contracte >= '2026-01-01T00:00:00.000'&$limit=5000"
     try:
         r = requests.get(url + query, timeout=15)
@@ -30,8 +29,8 @@ def carregar_dades_2026():
     except:
         return pd.DataFrame()
 
-# 4. INTERFÍCIE PRINCIPAL
-cerca_usuari = st.text_input("🔍 Investiga una empresa:", placeholder="Escriu i prem Enter (Ex: Indra, Clece, Neteja...)")
+# 3. INTERFÍCIE DE CERCA
+cerca_usuari = st.text_input("🔍 Cerca per NOM D'EMPRESA:", placeholder="Ex: Incasol, Indra, Clece...")
 
 st.divider()
 
@@ -39,62 +38,62 @@ with st.spinner("Actualitzant dades del 2026..."):
     df_any = carregar_dades_2026()
 
 if not df_any.empty:
-    # --- DETECTOR DE COLUMNES CLAU ---
-    col_diners = next((c for c in df_any.columns if "import_adjudicacio_amb_iva" in c), None)
+    # --- CONFIGURACIÓ DE COLUMNES ---
+    COL_DINERS = 'import_adjudicacio_amb_iva'
+    COL_EMPRESA = 'denominacio_adjudicatari' # Columna fixada segons la teva petició
+    COL_LINK = 'enllac_publicacio'
     
-    # Enllaç
-    col_link = 'enllac_publicacio' if 'enllac_publicacio' in df_any.columns else next((c for c in df_any.columns if "enlla" in c or "url" in c), None)
+    # Neteja de dades base
+    if COL_LINK in df_any.columns:
+        df_any[COL_LINK] = df_any[COL_LINK].apply(netejar_enllac)
     
-    # Empresa (Prioritat: denominacio_adjudicatari)
-    opcions_empresa = ['denominacio_adjudicatari', 'adjudicatari', 'nom_adjudicatari', 'identificacio_adjudicatari']
-    col_empresa = next((op for op in opcions_empresa if op in df_any.columns), None)
+    if COL_DINERS in df_any.columns:
+        df_any[COL_DINERS] = pd.to_numeric(df_any[COL_DINERS], errors='coerce').fillna(0)
 
-    # Neteja d'enllaços
-    if col_link:
-        df_any[col_link] = df_any[col_link].apply(netejar_enllac)
+    # --- DASHBOARD GENERAL (Sempre visible) ---
+    total_2026 = df_any[COL_DINERS].sum()
+    st.markdown(f"### 💰 Total invertit el 2026: <span style='color:#1E88E5'>{total_2026:,.2f} €</span>", unsafe_allow_html=True)
 
-    # --- DASHBOARD (TOTAL I GRÀFIC) ---
-    if col_diners:
-        df_any[col_diners] = pd.to_numeric(df_any[col_diners], errors='coerce').fillna(0)
-        total_2026 = df_any[col_diners].sum()
-        st.markdown(f"### 💰 Total invertit el 2026: <span style='color:#1E88E5'>{total_2026:,.2f} €</span>", unsafe_allow_html=True)
-
-    if col_empresa and col_diners:
-        # Neteja del nom per al gràfic (agafem només els primers 50 caràcters)
-        df_any['empresa_grafic'] = df_any[col_empresa].astype(str).apply(lambda x: x.split('||')[0][:50])
-        top5 = df_any.groupby('empresa_grafic')[col_diners].sum().reset_index()
-        top5 = top5[top5['empresa_grafic'] != 'nan'].sort_values(by=col_diners, ascending=False).head(5)
+    if COL_EMPRESA in df_any.columns:
+        # Gràfic Top 5
+        df_any['empresa_grafic'] = df_any[COL_EMPRESA].astype(str).apply(lambda x: x.split('||')[0][:50])
+        top5 = df_any.groupby('empresa_grafic')[COL_DINERS].sum().reset_index()
+        top5 = top5[top5['empresa_grafic'] != 'nan'].sort_values(by=COL_DINERS, ascending=False).head(5)
         
         if not top5.empty:
             st.write("🏆 **Top 5 Empreses amb més adjudicacions (2026):**")
             grafic = alt.Chart(top5).mark_bar(color='#1E88E5', cornerRadiusEnd=4).encode(
-                x=alt.X(col_diners, title='Euros (€)'),
+                x=alt.X(COL_DINERS, title='Euros (€)'),
                 y=alt.Y('empresa_grafic', sort='-x', title=None),
-                tooltip=['empresa_grafic', alt.Tooltip(col_diners, format=',.2f')]
+                tooltip=['empresa_grafic', alt.Tooltip(COL_DINERS, format=',.2f')]
             ).properties(height=300)
             st.altair_chart(grafic, use_container_width=True)
 
-    # --- RESULTATS DE LA CERCA ---
+    # --- LÒGICA DE CERCA I RESULTATS ---
     if cerca_usuari:
+        # Àncora invisible per al salt de pàgina
+        st.markdown('<div id="resultats"></div>', unsafe_allow_html=True)
         st.divider()
-        mask = df_any.astype(str).apply(lambda x: x.str.contains(cerca_usuari, case=False)).any(axis=1)
-        df_res = df_any[mask].copy()
         
+        # FILTRE: Només busquem a la columna de l'empresa
+        mask = df_any[COL_EMPRESA].astype(str).str.contains(cerca_usuari, case=False, na=False)
+        df_res = df_any[mask].copy()
+
         if not df_res.empty:
-            # 1. EL COMPTADOR DE RESULTATS
-            st.success(f"✅ Hem trobat **{len(df_res)}** contractes per a la cerca: *'{cerca_usuari}'*")
+            # COMPTADOR DE RESULTATS
+            st.success(f"✅ S'han trobat **{len(df_res)}** contractes per a l'empresa: *'{cerca_usuari}'*")
             
-            # Preparem la taula
-            mapa_columnes = {
+            # Taula de resultats
+            mapa_cols = {
                 'data_adjudicacio_contracte': 'Data',
                 'denominacio': 'Títol del Contracte',
-                col_empresa: 'Empresa',
-                col_diners: 'Import',
-                col_link: 'Enllaç Oficial'
+                COL_EMPRESA: 'Empresa',
+                COL_DINERS: 'Import',
+                COL_LINK: 'Enllaç'
             }
             
-            cols_finals = [c for c in mapa_columnes.keys() if c in df_res.columns and c is not None]
-            df_display = df_res[cols_finals].rename(columns=mapa_columnes)
+            cols_finals = [c for c in mapa_cols.keys() if c in df_res.columns]
+            df_display = df_res[cols_finals].rename(columns=mapa_cols)
             
             st.dataframe(
                 df_display,
@@ -103,21 +102,30 @@ if not df_any.empty:
                 column_config={
                     "Import": st.column_config.NumberColumn(format="%.2f €"),
                     "Data": st.column_config.DateColumn(format="DD/MM/YYYY"),
-                    "Enllaç Oficial": st.column_config.LinkColumn("Documentació", display_text="Obrir 🔗")
+                    "Enllaç": st.column_config.LinkColumn("Fitxa", display_text="Obrir 🔗")
                 }
             )
 
-            # 2. EL TRUC DE L'AUTO-SCROLL (JavaScript)
-            # Això fa que la pàgina baixi sola fins al final quan troba resultats
-            js_scroll = """
-                <script>
-                    var body = window.parent.document.querySelector(".main");
-                    body.scrollTop = body.scrollHeight;
-                </script>
+            # SCRIPT D'AUTOSCROLL
+            # Forcem el scroll al contenidor principal de Streamlit
+            js_code = """
+            <script>
+                setTimeout(function() {
+                    const mainContent = window.parent.document.querySelector('section.main');
+                    const target = window.parent.document.getElementById('resultats');
+                    if (mainContent && target) {
+                        mainContent.scrollTo({
+                            top: target.offsetTop,
+                            behavior: 'smooth'
+                        });
+                    }
+                }, 500);
+            </script>
             """
-            components.html(js_scroll, height=0)
+            components.html(js_code, height=0)
 
         else:
-            st.warning("No s'han trobat coincidències.")
+            st.warning(f"No hi ha cap empresa adjudicatària que contingui '{cerca_usuari}'.")
+
 else:
-    st.error("No s'han pogut carregar les dades.")
+    st.error("No s'ha pogut establir connexió amb la base de dades.")
