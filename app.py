@@ -19,7 +19,6 @@ def netejar_enllac(valor):
 @st.cache_data(ttl=3600)
 def carregar_dades_2026():
     url = "https://analisi.transparenciacatalunya.cat/resource/ybgg-dgi6.json"
-    # Carreguem dades del 2026
     query = "?$where=data_adjudicacio_contracte >= '2026-01-01T00:00:00.000'&$limit=5000"
     try:
         r = requests.get(url + query, timeout=15)
@@ -30,7 +29,7 @@ def carregar_dades_2026():
         return pd.DataFrame()
 
 # 3. INTERFÍCIE DE CERCA
-cerca_usuari = st.text_input("🔍 Cerca per NOM D'EMPRESA:", placeholder="Ex: Incasol, Indra, Clece...")
+cerca_usuari = st.text_input("🔍 Cerca per NOM D'EMPRESA:", placeholder="Escriu i prem Enter...")
 
 st.divider()
 
@@ -40,22 +39,20 @@ with st.spinner("Actualitzant dades del 2026..."):
 if not df_any.empty:
     # --- CONFIGURACIÓ DE COLUMNES ---
     COL_DINERS = 'import_adjudicacio_amb_iva'
-    COL_EMPRESA = 'denominacio_adjudicatari' # Columna fixada segons la teva petició
+    COL_EMPRESA = 'denominacio_adjudicatari'
     COL_LINK = 'enllac_publicacio'
     
-    # Neteja de dades base
     if COL_LINK in df_any.columns:
         df_any[COL_LINK] = df_any[COL_LINK].apply(netejar_enllac)
     
     if COL_DINERS in df_any.columns:
         df_any[COL_DINERS] = pd.to_numeric(df_any[COL_DINERS], errors='coerce').fillna(0)
 
-    # --- DASHBOARD GENERAL (Sempre visible) ---
+    # --- DASHBOARD GENERAL ---
     total_2026 = df_any[COL_DINERS].sum()
     st.markdown(f"### 💰 Total invertit el 2026: <span style='color:#1E88E5'>{total_2026:,.2f} €</span>", unsafe_allow_html=True)
 
     if COL_EMPRESA in df_any.columns:
-        # Gràfic Top 5
         df_any['empresa_grafic'] = df_any[COL_EMPRESA].astype(str).apply(lambda x: x.split('||')[0][:50])
         top5 = df_any.groupby('empresa_grafic')[COL_DINERS].sum().reset_index()
         top5 = top5[top5['empresa_grafic'] != 'nan'].sort_values(by=COL_DINERS, ascending=False).head(5)
@@ -69,21 +66,20 @@ if not df_any.empty:
             ).properties(height=300)
             st.altair_chart(grafic, use_container_width=True)
 
-    # --- LÒGICA DE CERCA I RESULTATS ---
+    # --- LÒGICA DE CERCA (NOMÉS EMPRESA) ---
     if cerca_usuari:
-        # Àncora invisible per al salt de pàgina
-        st.markdown('<div id="resultats"></div>', unsafe_allow_html=True)
-        st.divider()
-        
-        # FILTRE: Només busquem a la columna de l'empresa
+        # 1. Filtre estricte per columna empresa
         mask = df_any[COL_EMPRESA].astype(str).str.contains(cerca_usuari, case=False, na=False)
         df_res = df_any[mask].copy()
 
+        # Marcatge per a l'scroll
+        st.markdown('<div id="resultats_ancora"></div>', unsafe_allow_html=True)
+        st.divider()
+
         if not df_res.empty:
-            # COMPTADOR DE RESULTATS
+            # 2. Comptador de resultats
             st.success(f"✅ S'han trobat **{len(df_res)}** contractes per a l'empresa: *'{cerca_usuari}'*")
             
-            # Taula de resultats
             mapa_cols = {
                 'data_adjudicacio_contracte': 'Data',
                 'denominacio': 'Títol del Contracte',
@@ -106,26 +102,43 @@ if not df_any.empty:
                 }
             )
 
-            # SCRIPT D'AUTOSCROLL
-            # Forcem el scroll al contenidor principal de Streamlit
-            js_code = """
+            # 3. JavaScript Robust per al Scroll
+            js_scroll = """
             <script>
-                setTimeout(function() {
-                    const mainContent = window.parent.document.querySelector('section.main');
-                    const target = window.parent.document.getElementById('resultats');
-                    if (mainContent && target) {
-                        mainContent.scrollTo({
-                            top: target.offsetTop,
+                function doScroll() {
+                    const selectors = [
+                        '.main', 
+                        'section.main', 
+                        'div[data-testid="stAppViewContainer"]'
+                    ];
+                    
+                    // Intentem trobar el contenidor principal de Streamlit
+                    let container = null;
+                    for (const s of selectors) {
+                        const el = window.parent.document.querySelector(s);
+                        if (el) { container = el; break; }
+                    }
+
+                    if (container) {
+                        // Baixem fins al final o fins a una posició alta
+                        container.scrollTo({
+                            top: container.scrollHeight,
+                            behavior: 'smooth'
+                        });
+                    } else {
+                        // Pla B: Scroll de la finestra nativa
+                        window.parent.scrollTo({
+                            top: 2000, 
                             behavior: 'smooth'
                         });
                     }
-                }, 500);
+                }
+                setTimeout(doScroll, 800); // Temps suficient per carregar la taula
             </script>
             """
-            components.html(js_code, height=0)
+            components.html(js_scroll, height=0)
 
         else:
-            st.warning(f"No hi ha cap empresa adjudicatària que contingui '{cerca_usuari}'.")
-
+            st.warning(f"No s'ha trobat cap empresa que contingui '{cerca_usuari}'.")
 else:
-    st.error("No s'ha pogut establir connexió amb la base de dades.")
+    st.error("Error de connexió.")
