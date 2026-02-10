@@ -1,101 +1,75 @@
 import streamlit as st
 import pandas as pd
 import requests
+import altair as alt
 
-# 1. CONFIGURACIÓ DE PÀGINA
-st.set_page_config(page_title="Visor Contractes Públics", page_icon="💶", layout="wide")
+# 1. CONFIGURACIÓ
+st.set_page_config(page_title="Monitor 2026", page_icon="📊", layout="wide")
 
-st.title("💶 Visor de Contractes Públics de Catalunya")
-st.markdown("""
-**Buscador Oficial:** Descobreix quines empreses reben contractes públics i per quin import.
-_Dades en temps real del portal de Transparència (Dataset: ybgg-dgi6)._
-""")
+st.title("📊 Monitor de Contractació Pública 2026")
+st.markdown("Dades oficials de la Generalitat de Catalunya en temps real (Dataset: ybgg-dgi6).")
 
-# 2. CÀRREGA DE DADES (Optimitzada)
-@st.cache_data(ttl=600)
-def carregar_dades():
-    # URL del dataset bo que has trobat
+# 2. CÀRREGA DE DADES ESTRUCTURAL (EL DASHBOARD)
+# Descarreguem TOTS els contractes del 2026 per fer les estadístiques
+@st.cache_data(ttl=3600) # Guardem això 1 hora perquè no canvia tant ràpid
+def carregar_estadistiques_2026():
     url = "https://analisi.transparenciacatalunya.cat/resource/ybgg-dgi6.json"
     
-    # Descarreguem els últims 5.000 contractes per tenir una bona base
-    params = {
-        "$limit": 5000,
-        "$order": "data_publicacio DESC"
-    }
+    # TRUC: Filtrem només els contractes d'aquest any (des de l'1 de gener de 2026)
+    # Això fa que l'app vagi ràpid i les dades siguin actuals "del que portem d'any"
+    query = "?$where=data_adjudicacio_contracte >= '2026-01-01T00:00:00.000'&$limit=10000"
     
     try:
-        r = requests.get(url, params=params)
+        r = requests.get(url + query)
         if r.status_code == 200:
-            return pd.DataFrame(r.json())
-        else:
-            return pd.DataFrame()
+            df = pd.DataFrame(r.json())
+            # Netegem els diners immediatament
+            if 'import_adjudicacio_amb_iva' in df.columns:
+                df['import_adjudicacio_amb_iva'] = pd.to_numeric(df['import_adjudicacio_amb_iva'], errors='coerce').fillna(0)
+            return df
+        return pd.DataFrame()
     except:
         return pd.DataFrame()
 
-# Carreguem dades amb spinner
-with st.spinner("Connectant amb el registre oficial de contractes..."):
-    df = carregar_dades()
-
-# 3. NETEJA I PREPARACIÓ DE COLUMNES
-if not df.empty:
-    # Seleccionem només les columnes que ens interessen i les renombrem si existeixen
-    # Aquestes són les columnes típiques d'aquest dataset
-    columnes_clau = {
-        'data_publicacio': 'DATA',
-        'ambit': 'ORGANISME (QUI PAGA)',
-        'denominacio': 'OBJECTE DEL CONTRACTE',
-        'adjudicatari': 'EMPRESA GUANYADORA',
-        'import_adjudicacio_amb_iva': 'IMPORT (€)'
+# 3. FUNCIÓ DE CERCA ESPECÍFICA (Sota demanda)
+def cercar_empresa(text):
+    url = "https://analisi.transparenciacatalunya.cat/resource/ybgg-dgi6.json"
+    # Aquesta cerca només s'activa quan l'usuari escriu
+    params = {
+        "$q": text,
+        "$limit": 50,
+        "$order": "data_adjudicacio_contracte DESC"
     }
-    
-    # Filtrem només les que realment existeixen al fitxer descarregat
-    columnes_existents = {k: v for k, v in columnes_clau.items() if k in df.columns}
-    
-    # Creem un nou DataFrame només amb aquestes columnes i els canviem el nom
-    df_net = df[columnes_existents.keys()].rename(columns=columnes_existents)
-    
-    # Convertim la columna de diners a números per poder sumar
-    if 'IMPORT (€)' in df_net.columns:
-        df_net['IMPORT (€)'] = pd.to_numeric(df_net['IMPORT (€)'], errors='coerce').fillna(0)
+    try:
+        r = requests.get(url, params=params)
+        return pd.DataFrame(r.json()) if r.status_code == 200 else pd.DataFrame()
+    except:
+        return pd.DataFrame()
 
-    # 4. EL BUSCADOR
-    st.success(f"✅ Dades actualitzades: {len(df_net)} contractes analitzats.")
+# --- PART 1: EL CERCADOR (A DALT DE TOT) ---
+col_cerca, col_buit = st.columns([2,1])
+with col_cerca:
+    text_cerca = st.text_input("🔍 Investiga una empresa:", placeholder="Escriu aquí per activar el cercador (Ex: Indra, Securitas, Neteja...)")
+
+# --- PART 2: EL GRÀFIC I EL TOTAL (SEMPRE VISIBLES A SOTA) ---
+with st.spinner("Calculant la despesa del 2026..."):
+    df_2026 = carregar_estadistiques_2026()
+
+if not df_2026.empty:
+    st.divider()
     
-    text_cerca = st.text_input("🔍 Cerca per EMPRESA o per CONCEPTE:", placeholder="Ex: Ferrovial, Neteja, Sòl, Indra...")
+    # A. EL TOTAL GASTAT (KPI)
+    total_any = df_2026['import_adjudicacio_amb_iva'].sum()
+    st.subheader(f"💰 Despesa total en contractes aquest 2026: :blue[{total_any:,.2f} €]")
     
-    if text_cerca:
-        # Filtre intel·ligent: Busca el text a TOTA la taula (ignorant majúscules/minúscules)
-        filtre = df_net.astype(str).apply(lambda x: x.str.contains(text_cerca, case=False)).any(axis=1)
-        df_resultat = df_net[filtre]
+    # B. EL GRÀFIC (TOP 5 EMPRESES)
+    # Agrupem per empresa i sumem els diners
+    if 'adjudicatari' in df_2026.columns:
+        ranking = df_2026.groupby('adjudicatari')['import_adjudicacio_amb_iva'].sum().reset_index()
+        ranking = ranking.sort_values(by='import_adjudicacio_amb_iva', ascending=False).head(5)
         
-        if not df_resultat.empty:
-            # MÈTRIQUES (KPIS)
-            total_diners = df_resultat['IMPORT (€)'].sum()
-            
-            c1, c2 = st.columns(2)
-            c1.metric("Contractes Trobats", len(df_resultat))
-            c2.metric("Volum Econòmic Total", f"{total_diners:,.2f} €".replace(",", "X").replace(".", ",").replace("X", "."))
-            
-            st.divider()
-            st.subheader("📋 Detall dels contractes")
-            
-            # Mostrem la taula maca i ordenada per data
-            st.dataframe(
-                df_resultat.sort_values(by="DATA", ascending=False),
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "IMPORT (€)": st.column_config.NumberColumn(format="%.2f €"),
-                    "DATA": st.column_config.DateColumn(format="DD/MM/YYYY")
-                }
-            )
-        else:
-            st.warning(f"No s'ha trobat cap contracte amb la paraula '{text_cerca}'.")
-    else:
-        st.info("👆 Escriu el nom d'una empresa per veure quants diners públics rep.")
-        # Mostrem els 5 últims contractes d'exemple
-        st.write("Últims contractes públics signats a Catalunya:")
-        st.dataframe(df_net.head(5), use_container_width=True, hide_index=True)
-
-else:
-    st.error("Error de connexió. Torna-ho a provar en uns minuts.")
+        st.write("🏆 **Top 5 Empreses amb més adjudicacions enguany:**")
+        
+        # Creem un gràfic de barres bonic amb Altair
+        chart = alt.Chart(ranking).mark_bar().encode(
+            x=alt.X('import_adjudicacio_amb_
