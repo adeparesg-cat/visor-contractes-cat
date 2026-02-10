@@ -2,91 +2,100 @@ import streamlit as st
 import pandas as pd
 import requests
 
-# 1. CONFIGURACIÓ
-st.set_page_config(page_title="Visor Contractes 2026", page_icon="💶", layout="wide")
+# 1. CONFIGURACIÓ DE PÀGINA
+st.set_page_config(page_title="Visor Contractes Públics", page_icon="💶", layout="wide")
 
-st.title("💶 Visor de Contractes Públics")
-st.markdown(f"Connectat al dataset oficial: **ybgg-dgi6** (Generalitat de Catalunya)")
+st.title("💶 Visor de Contractes Públics de Catalunya")
+st.markdown("""
+**Buscador Oficial:** Descobreix quines empreses reben contractes públics i per quin import.
+_Dades en temps real del portal de Transparència (Dataset: ybgg-dgi6)._
+""")
 
-# 2. CONNEXIÓ AMB LA TEVA TROBALLA
-DATASET_ID = "ybgg-dgi6"
-ENDPOINT = f"https://analisi.transparenciacatalunya.cat/resource/{DATASET_ID}.json"
-
+# 2. CÀRREGA DE DADES (Optimitzada)
 @st.cache_data(ttl=600)
 def carregar_dades():
-    # Descarreguem els últims 2.000 contractes per tenir una bona mostra
-    # Ordenem per data de publicació descendent (si existeix)
-    query = "?$limit=2000"
+    # URL del dataset bo que has trobat
+    url = "https://analisi.transparenciacatalunya.cat/resource/ybgg-dgi6.json"
+    
+    # Descarreguem els últims 5.000 contractes per tenir una bona base
+    params = {
+        "$limit": 5000,
+        "$order": "data_publicacio DESC"
+    }
     
     try:
-        response = requests.get(ENDPOINT + query)
-        if response.status_code == 200:
-            df = pd.DataFrame(response.json())
-            return df
+        r = requests.get(url, params=params)
+        if r.status_code == 200:
+            return pd.DataFrame(r.json())
         else:
-            st.error(f"Error {response.status_code} connectant amb l'API.")
             return pd.DataFrame()
-    except Exception as e:
-        st.error(f"Error de connexió: {e}")
+    except:
         return pd.DataFrame()
 
-# 3. CÀRREGA I AUTO-DIAGNÒSTIC
-with st.spinner("Descarregant el dataset que has trobat..."):
+# Carreguem dades amb spinner
+with st.spinner("Connectant amb el registre oficial de contractes..."):
     df = carregar_dades()
 
+# 3. NETEJA I PREPARACIÓ DE COLUMNES
 if not df.empty:
-    # --- AUTO-DETECTOR DE COLUMNES ---
-    # La Generalitat canvia els noms sovint. Aquest bloc busca la columna correcta automàticament.
+    # Seleccionem només les columnes que ens interessen i les renombrem si existeixen
+    # Aquestes són les columnes típiques d'aquest dataset
+    columnes_clau = {
+        'data_publicacio': 'DATA',
+        'ambit': 'ORGANISME (QUI PAGA)',
+        'denominacio': 'OBJECTE DEL CONTRACTE',
+        'adjudicatari': 'EMPRESA GUANYADORA',
+        'import_adjudicacio_amb_iva': 'IMPORT (€)'
+    }
     
-    # 1. Busquem la columna de l'Empresa (Adjudicatari)
-    col_empresa = next((c for c in df.columns if "adjudicatari" in c.lower() or "denominaci" in c.lower()), None)
+    # Filtrem només les que realment existeixen al fitxer descarregat
+    columnes_existents = {k: v for k, v in columnes_clau.items() if k in df.columns}
     
-    # 2. Busquem la columna dels Diners (Import)
-    col_diners = next((c for c in df.columns if "import" in c.lower() and "iva" in c.lower()), None)
-    if not col_diners: col_diners = next((c for c in df.columns if "import" in c.lower()), None) # Segon intent
+    # Creem un nou DataFrame només amb aquestes columnes i els canviem el nom
+    df_net = df[columnes_existents.keys()].rename(columns=columnes_existents)
+    
+    # Convertim la columna de diners a números per poder sumar
+    if 'IMPORT (€)' in df_net.columns:
+        df_net['IMPORT (€)'] = pd.to_numeric(df_net['IMPORT (€)'], errors='coerce').fillna(0)
 
-    # 3. Busquem la columna del Concepte (Objecte)
-    col_concepte = next((c for c in df.columns if "objecte" in c.lower() or "descripci" in c.lower()), None)
+    # 4. EL BUSCADOR
+    st.success(f"✅ Dades actualitzades: {len(df_net)} contractes analitzats.")
     
-    # 4. Busquem la Data
-    col_data = next((c for c in df.columns if "data" in c.lower()), None)
-
-    # --- INTERFÍCIE ---
+    text_cerca = st.text_input("🔍 Cerca per EMPRESA o per CONCEPTE:", placeholder="Ex: Ferrovial, Neteja, Sòl, Indra...")
     
-    if col_empresa and col_diners:
-        st.success(f"✅ Dades carregades correctament! Analitzant {len(df)} contractes.")
+    if text_cerca:
+        # Filtre intel·ligent: Busca el text a TOTA la taula (ignorant majúscules/minúscules)
+        filtre = df_net.astype(str).apply(lambda x: x.str.contains(text_cerca, case=False)).any(axis=1)
+        df_resultat = df_net[filtre]
         
-        # BUSCADOR
-        busqueda = st.text_input("🔍 Cerca (Empresa o Concepte):", placeholder="Ex: Incasol, Neteja, Sòl...")
-        
-        if busqueda:
-            # Filtre intel·ligent (ignora majúscules/minúscules i accents)
-            mask = df.astype(str).apply(lambda x: x.str.contains(busqueda, case=False, na=False)).any(axis=1)
-            df_filtrat = df[mask]
+        if not df_resultat.empty:
+            # MÈTRIQUES (KPIS)
+            total_diners = df_resultat['IMPORT (€)'].sum()
             
-            if not df_filtrat.empty:
-                # Neteja de diners (convertir text a números)
-                df_filtrat[col_diners] = pd.to_numeric(df_filtrat[col_diners], errors='coerce')
-                total = df_filtrat[col_diners].sum()
-                
-                # Resultats
-                c1, c2 = st.columns(2)
-                c1.metric("Contractes Trobats", len(df_filtrat))
-                c1.metric("Volum Econòmic", f"{total:,.2f} €".replace(",", "X").replace(".", ",").replace("X", "."))
-                
-                st.subheader("📝 Detall dels contractes")
-                
-                # Taula neta
-                cols_finals = [c for c in [col_data, col_empresa, col_concepte, col_diners] if c is not None]
-                st.dataframe(df_filtrat[cols_finals], use_container_width=True)
-            else:
-                st.warning(f"No s'ha trobat res per '{busqueda}'.")
+            c1, c2 = st.columns(2)
+            c1.metric("Contractes Trobats", len(df_resultat))
+            c2.metric("Volum Econòmic Total", f"{total_diners:,.2f} €".replace(",", "X").replace(".", ",").replace("X", "."))
+            
+            st.divider()
+            st.subheader("📋 Detall dels contractes")
+            
+            # Mostrem la taula maca i ordenada per data
+            st.dataframe(
+                df_resultat.sort_values(by="DATA", ascending=False),
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "IMPORT (€)": st.column_config.NumberColumn(format="%.2f €"),
+                    "DATA": st.column_config.DateColumn(format="DD/MM/YYYY")
+                }
+            )
         else:
-            st.info("👆 Escriu alguna cosa per començar a investigar.")
-            st.write("Exemple de dades recents:", df[[col_empresa, col_diners]].head())
-            
+            st.warning(f"No s'ha trobat cap contracte amb la paraula '{text_cerca}'.")
     else:
-        st.warning("⚠️ Hem connectat, però els noms de les columnes són estranys.")
-        st.write("Columnes trobades:", df.columns.tolist())
+        st.info("👆 Escriu el nom d'una empresa per veure quants diners públics rep.")
+        # Mostrem els 5 últims contractes d'exemple
+        st.write("Últims contractes públics signats a Catalunya:")
+        st.dataframe(df_net.head(5), use_container_width=True, hide_index=True)
+
 else:
-    st.error("No s'han pogut carregar dades. Revisa si l'ID 'ybgg-dgi6' correspon a un dataset públic actiu.")
+    st.error("Error de connexió. Torna-ho a provar en uns minuts.")
