@@ -16,76 +16,75 @@ def carregar_dades_2026():
     # Filtrem contractes del 2026
     query = "?$where=data_adjudicacio_contracte >= '2026-01-01T00:00:00.000'&$limit=5000"
     try:
-        r = requests.get(url + query)
+        r = requests.get(url + query, timeout=15)
         if r.status_code == 200:
             return pd.DataFrame(r.json())
         return pd.DataFrame()
     except:
         return pd.DataFrame()
 
-# 3. INTERFÍCIE
-cerca_usuari = st.text_input("🔍 Investiga una empresa o servei:", placeholder="Ex: Indra, Neteja, Sòl...")
+# 3. INTERFÍCIE DE CERCA
+cerca_usuari = st.text_input("🔍 Investiga una empresa:", placeholder="Escriu aquí per buscar...")
 
 st.divider()
 with st.spinner("Actualitzant dades del 2026..."):
     df_any = carregar_dades_2026()
 
 if not df_any.empty:
-    # --- NETEJA DE COLUMNES INTEL·LIGENT ---
-    # Identifiquem les columnes correctes
-    col_diners = 'import_adjudicacio_amb_iva'
-    # PRIORITAT: Busquem el camp del NOM, no el de l'ID (NIF)
-    col_empresa = 'nom_adjudicatari' if 'nom_adjudicatari' in df_any.columns else 'adjudicatari'
+    # --- DETECTOR DE COLUMNES INTEL·LIGENT ---
+    # Busquem la columna de diners
+    col_diners = next((c for c in df_any.columns if "import_adjudicacio_amb_iva" in c), None)
     
-    # Convertim diners a números
-    df_any[col_diners] = pd.to_numeric(df_any[col_diners], errors='coerce').fillna(0)
-    
-    # 1. TOTAL GASTAT
-    total_2026 = df_any[col_diners].sum()
-    st.markdown(f"### 💰 Total invertit el 2026: <span style='color:#1E88E5'>{total_2026:,.2f} €</span>", unsafe_allow_html=True)
+    # Busquem la millor columna per al NOM de l'empresa
+    # 1. adjudicatari | 2. nom_adjudicatari | 3. identificacio_adjudicatari
+    col_empresa = None
+    for opcio in ['adjudicatari', 'nom_adjudicatari', 'identificacio_adjudicatari']:
+        if opcio in df_any.columns:
+            col_empresa = opcio
+            break
 
-    # 2. GRÀFIC TOP 5 (AMB NOMS NETS)
-    if col_empresa in df_any.columns:
-        # Agrupem i sumem
-        top5 = df_any.groupby(col_empresa)[col_diners].sum().reset_index()
+    # 1. MOSTRAR EL TOTAL
+    if col_diners:
+        df_any[col_diners] = pd.to_numeric(df_any[col_diners], errors='coerce').fillna(0)
+        total_2026 = df_any[col_diners].sum()
+        st.markdown(f"### 💰 Total invertit el 2026: <span style='color:#1E88E5'>{total_2026:,.2f} €</span>", unsafe_allow_html=True)
+
+    # 2. GENERACIÓ DEL GRÀFIC
+    if col_empresa and col_diners:
+        # NETEJA: Si la columna té "noms raros" amb ||, ens quedem només amb el primer tros
+        df_any['empresa_neta'] = df_any[col_empresa].astype(str).apply(lambda x: x.split('||')[0][:40])
         
-        # EL TRUC: Filtrem noms que semblen codis (més de 30 caràcters o que contenen ||)
-        # Això farà que el gràfic sigui MOLT més net
-        top5 = top5[~top5[col_empresa].str.contains(r'\|\|', na=False)]
-        top5 = top5[top5[col_empresa].str.len() < 60] # Retallem noms gegants
-        
+        # Agrupem pel nom net
+        top5 = df_any.groupby('empresa_neta')[col_diners].sum().reset_index()
+        top5 = top5[top5['empresa_neta'] != 'nan'] # Traiem buits
         top5 = top5.sort_values(by=col_diners, ascending=False).head(5)
         
         if not top5.empty:
-            st.write("🏆 **Empreses amb més volum d'adjudicació enguany (Noms Verificats):**")
+            st.write("🏆 **Top 5 Empreses amb més adjudicacions (2026):**")
             
             grafic = alt.Chart(top5).mark_bar(color='#1E88E5', cornerRadiusEnd=4).encode(
                 x=alt.X(col_diners, title='Euros (€)'),
-                y=alt.Y(col_empresa, sort='-x', title=None),
-                tooltip=[col_empresa, alt.Tooltip(col_diners, format=',.2f')]
+                y=alt.Y('empresa_neta', sort='-x', title=None),
+                tooltip=['empresa_neta', alt.Tooltip(col_diners, format=',.2f')]
             ).properties(height=300)
             
             st.altair_chart(grafic, use_container_width=True)
         else:
-            st.info("Calculant rànquing d'empreses...")
+            st.info("No hi ha dades suficients per generar el rànquing.")
+            
+    # BOTÓ DE DIAGNÒSTIC (Només visible si vols xafardejar)
+    with st.expander("🛠️ Diagnòstic tècnic (si el gràfic falla)"):
+        st.write("Columnes detectades:", df_any.columns.tolist())
+        st.write("Columna empresa usada:", col_empresa)
+        st.write("Mostra de dades:", df_any[[col_empresa, col_diners]].head() if col_empresa else "Cap")
 
-# 4. RESULTATS DE LA CERCA (NOMÉS SI L'USUARI ESCRIU)
+# 4. RESULTATS DE LA CERCA
 if cerca_usuari:
     st.divider()
     mask = df_any.astype(str).apply(lambda x: x.str.contains(cerca_usuari, case=False)).any(axis=1)
-    df_res = df_any[mask].copy()
+    df_res = df_any[mask]
     
     if not df_res.empty:
-        st.subheader(f"📂 Resultats per: '{cerca_usuari}'")
-        # Mostrem les columnes que el ciutadà entén
-        cols_vides = ['data_adjudicacio_contracte', 'denominacio', col_empresa, col_diners]
-        cols_final = [c for c in cols_vides if c in df_res.columns]
-        
-        st.dataframe(
-            df_res[cols_final].sort_values(by=col_diners, ascending=False), 
-            use_container_width=True, 
-            hide_index=True,
-            column_config={col_diners: st.column_config.NumberColumn("Import Adjudicat", format="%.2f €")}
-        )
-    else:
-        st.warning("No s'ha trobat cap contracte per aquesta cerca.")
+        st.subheader(f"📂 Contractes trobats per: '{cerca_usuari}'")
+        cols_final = [c for c in ['data_adjudicacio_contracte', 'denominacio', col_empresa, col_diners] if c in df_res.columns]
+        st.dataframe(df_res[cols_final], use_container_width=True, hide_index=True)
