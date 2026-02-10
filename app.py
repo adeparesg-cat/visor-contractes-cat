@@ -9,11 +9,21 @@ st.set_page_config(page_title="Monitor 2026", page_icon="📊", layout="wide")
 st.title("📊 Monitor de Contractació Pública 2026")
 st.markdown("Dades oficials de la Generalitat de Catalunya (Dataset: ybgg-dgi6).")
 
-# 2. CÀRREGA DE DADES
+# 2. FUNCIÓ PER ARREGLAR ELS ENLLAÇOS TRENCATS
+def netejar_enllac(valor):
+    """
+    Aquesta funció arregla el problema dels enllaços de Socrata.
+    Si l'enllaç ve com un diccionari {'url': '...', 'html': '...'}, es queda només amb la URL.
+    """
+    if isinstance(valor, dict):
+        return valor.get('url', '')
+    return str(valor) if pd.notna(valor) else ''
+
+# 3. CÀRREGA DE DADES
 @st.cache_data(ttl=3600)
 def carregar_dades_2026():
     url = "https://analisi.transparenciacatalunya.cat/resource/ybgg-dgi6.json"
-    # Filtrem contractes del 2026 i agafem un límit segur
+    # Filtrem contractes del 2026
     query = "?$where=data_adjudicacio_contracte >= '2026-01-01T00:00:00.000'&$limit=5000"
     try:
         r = requests.get(url + query, timeout=15)
@@ -23,7 +33,7 @@ def carregar_dades_2026():
     except:
         return pd.DataFrame()
 
-# 3. INTERFÍCIE PRINCIPAL
+# 4. INTERFÍCIE PRINCIPAL
 cerca_usuari = st.text_input("🔍 Investiga una empresa:", placeholder="Escriu aquí el nom de l'empresa...")
 
 st.divider()
@@ -38,7 +48,7 @@ if not df_any.empty:
     col_diners = next((c for c in df_any.columns if "import_adjudicacio_amb_iva" in c), None)
     
     # 2. Enllaç (AQUÍ ESTÀ LA CORRECCIÓ)
-    # Busquem explícitament 'enllac_publicacio', si no hi és, busquem alternatives
+    # Busquem la columna correcta (normalment és 'enllac_publicacio')
     col_link = 'enllac_publicacio' if 'enllac_publicacio' in df_any.columns else next((c for c in df_any.columns if "enlla" in c or "url" in c), None)
     
     # 3. Empresa
@@ -47,6 +57,11 @@ if not df_any.empty:
         if opcio in df_any.columns:
             col_empresa = opcio
             break
+
+    # --- NETEJA DE L'ENLLAÇ (EL PAS CLAU) ---
+    if col_link:
+        # Apliquem la funció de neteja a tota la columna per treure els diccionaris
+        df_any[col_link] = df_any[col_link].apply(netejar_enllac)
 
     # --- VISUALITZACIÓ DEL DASHBOARD (TOTAL I GRÀFIC) ---
     if col_diners:
@@ -72,7 +87,6 @@ if not df_any.empty:
     # --- RESULTATS DE LA CERCA AMB ENLLAÇ DIRECTE ---
     if cerca_usuari:
         st.divider()
-        # Filtrem les dades
         mask = df_any.astype(str).apply(lambda x: x.str.contains(cerca_usuari, case=False)).any(axis=1)
         df_res = df_any[mask].copy()
         
@@ -80,7 +94,6 @@ if not df_any.empty:
             st.subheader(f"📂 Contractes trobats per: '{cerca_usuari}'")
             
             # Preparem la taula per ensenyar
-            # Creem un diccionari per renombrar les columnes lletges a noms bonics
             mapa_columnes = {
                 'data_adjudicacio_contracte': 'Data',
                 'denominacio': 'Títol del Contracte',
@@ -89,13 +102,9 @@ if not df_any.empty:
                 col_link: 'Enllaç Oficial' # Aquesta és la clau
             }
             
-            # Seleccionem només les columnes que existeixen realment
             cols_finals = [c for c in mapa_columnes.keys() if c in df_res.columns and c is not None]
-            
-            # Creem el dataframe net i el renonbrem
             df_display = df_res[cols_finals].rename(columns=mapa_columnes)
             
-            # Mostrem la taula configurant la columna d'enllaç com a LinkColumn
             st.dataframe(
                 df_display,
                 use_container_width=True,
@@ -105,7 +114,7 @@ if not df_any.empty:
                     "Data": st.column_config.DateColumn(format="DD/MM/YYYY"),
                     "Enllaç Oficial": st.column_config.LinkColumn(
                         "Documentació", 
-                        display_text="Obrir 🔗", # El text que es veu al botó
+                        display_text="Obrir 🔗", 
                         help="Clica per anar a la font oficial"
                     )
                 }
