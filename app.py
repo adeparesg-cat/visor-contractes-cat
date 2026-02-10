@@ -3,73 +3,84 @@ import pandas as pd
 import requests
 
 # 1. CONFIGURACIÓ
-st.set_page_config(page_title="Visor Contractes 2026", page_icon="🏦", layout="wide")
+st.set_page_config(page_title="Visor 360º Contractes", page_icon="🌍", layout="wide")
 
-st.title("🏦 Visor de Contractes de la Generalitat")
-st.markdown("Dades oficials connectades en temps real amb el Portal de Dades Obertes.")
+st.title("🌍 Visor 360º de Contractes Públics")
+st.markdown("""
+**Buscador Universal:** Cerca per empresa, per organisme públic o per concepte.
+_Exemple: Escriu 'Incasol' per veure què contracten, o 'Neteja' per veure serveis._
+""")
 
-# 2. PROVA DE CONNEXIÓ (El truc per evitar el 404)
-# Provarem la nova adreça oficial de la Generalitat
-ENDPOINT = "https://dadesobertes.gencat.cat/resource/jx2x-848j.json"
-
+# 2. DESCÀRREGA DE DADES MASSIVA (ÚLTIMS 1000 CONTRACTES)
 @st.cache_data(ttl=600)
-def provar_connexio():
-    try:
-        # Intentem baixar només 1 fila per saber si la porta està oberta
-        r = requests.get(f"{ENDPOINT}?$limit=1")
-        return r.status_code == 200
-    except:
-        return False
-
-if not provar_connexio():
-    st.error("🚨 Atenció: El servidor de dades de la Generalitat no respon o ha canviat d'adreça.")
-    st.info("Estem provant d'utilitzar l'adreça alternativa...")
-    ENDPOINT = "https://analisi.transparenciacatalunya.cat/resource/jx2x-848j.json"
-
-# 3. MOTOR DE CERCA MILLORAT
-def buscar_contractes(text):
-    # La clau és buscar a la columna 'adjudicatari' de forma neta
-    text_net = text.strip().upper()
+def carregar_dades_recents():
+    # URL oficial (jx2x-848j)
+    endpoint = "https://analisi.transparenciacatalunya.cat/resource/jx2x-848j.json"
     
-    # Utilitzem 'starts_with' o 'like' però més senzill
-    parametres = {
-        "$where": f"upper(adjudicatari) like '%{text_net}%' or upper(objecte_del_contracte) like '%{text_net}%'",
-        "$limit": 100,
-        "$order": "data_formalitzaci_del_contracte DESC"
-    }
+    # Descarreguem els últims 1000 sense filtres (per tenir-ho tot)
+    query = "?$limit=1000&$order=data_formalitzaci_del_contracte DESC"
     
     try:
-        resposta = requests.get(ENDPOINT, params=parametres)
-        if resposta.status_code == 200:
-            return pd.DataFrame(resposta.json())
-        else:
-            # Si falla, intentem una cerca global sense filtres complexos (més lenta però segura)
-            r_global = requests.get(f"{ENDPOINT}?q={text_net}&$limit=50")
-            return pd.DataFrame(r_global.json())
-    except:
+        data = pd.read_json(endpoint + query)
+        return data
+    except Exception as e:
+        st.error(f"Error carregant dades: {e}")
         return pd.DataFrame()
 
-# 4. INTERFÍCIE
-cerca = st.text_input("🔍 Escriu el nom d'una empresa (Ex: INCASOL, TELEFONICA, SEAT):")
+# Carreguem les dades només entrar (així va super ràpid després)
+with st.spinner("Carregant els últims 1.000 contractes de la Generalitat..."):
+    df_mestre = carregar_dades_recents()
 
-if cerca:
-    with st.spinner('Connectant amb la Generalitat...'):
-        df = buscar_contractes(cerca)
+# 3. INTERFÍCIE DE CERCA
+if not df_mestre.empty:
+    st.success(f"✅ Dades connectades: Tenim {len(df_mestre)} contractes frescos a la memòria.")
+    
+    # Text de cerca
+    text_usuari = st.text_input("🔍 Què vols trobar?", placeholder="Ex: Incasol, Sòl, Menjador, Seguretat...")
+
+    if text_usuari:
+        # --- FILTRE UNIVERSAL (MÀGIA PYTHON) ---
+        # Aquesta línia busca el text a QUALSEVOL columna de la taula
+        # Ignora majúscules/minúscules (case=False)
+        filtre = df_mestre.apply(lambda row: row.astype(str).str.contains(text_usuari, case=False).any(), axis=1)
+        df_resultat = df_mestre[filtre]
         
-        if not df.empty:
-            st.balloons()
-            
-            # Netegem la columna d'euros
-            if 'import_adjudicaci_amb_iva' in df.columns:
-                df['import_adjudicaci_amb_iva'] = pd.to_numeric(df['import_adjudicaci_amb_iva'], errors='coerce')
-                total = df['import_adjudicaci_amb_iva'].sum()
-                st.metric("Total adjudicat trobat", f"{total:,.2f} €".replace(",", "X").replace(".", ",").replace("X", "."))
-            
-            # Mostrem la taula
-            cols_ok = [c for c in ['data_formalitzaci_del_contracte', 'adjudicatari', 'objecte_del_contracte', 'import_adjudicaci_amb_iva'] if c in df.columns]
-            st.dataframe(df[cols_ok], use_container_width=True)
-        else:
-            st.warning("⚠️ No hem trobat resultats. Prova amb una paraula més curta (ex: 'SOL' en lloc de 'INCASOL').")
+        # 4. RESULTATS
+        if not df_resultat.empty:
+            # Netegem columna diners
+            if 'import_adjudicaci_amb_iva' in df_resultat.columns:
+                df_resultat['import_adjudicaci_amb_iva'] = pd.to_numeric(df_resultat['import_adjudicaci_amb_iva'], errors='coerce')
+                total = df_resultat['import_adjudicaci_amb_iva'].sum()
+                
+                # Mètriques
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Contractes trobats", len(df_resultat))
+                c2.metric("Volum total", f"{total:,.2f} €".replace(",", "X").replace(".", ",").replace("X", "."))
+                # Dada curiosa: Qui és l'organisme que més surt?
+                top_organisme = df_resultat['departament_ens_adjudicador'].mode()[0] if 'departament_ens_adjudicador' in df_resultat.columns else "Desconegut"
+                c3.metric("Organisme principal", top_organisme)
 
-st.divider()
-st.caption("Font de dades: jx2x-848j (Registre Públic de Contractes de Catalunya)")
+            st.divider()
+            st.subheader(f"Resultats per: '{text_usuari}'")
+            
+            # Mostrem les columnes clau
+            cols_clau = ['data_formalitzaci_del_contracte', 'departament_ens_adjudicador', 'adjudicatari', 'objecte_del_contracte', 'import_adjudicaci_amb_iva']
+            cols_finals = [c for c in cols_clau if c in df_resultat.columns]
+            
+            st.dataframe(
+                df_resultat[cols_finals].style.format({"import_adjudicaci_amb_iva": "{:,.2f} €"}),
+                use_container_width=True
+            )
+        else:
+            st.warning(f"⚠️ No hem trobat '{text_usuari}' entre els últims 1.000 contractes.")
+            st.info("Prova amb una paraula més genèrica.")
+
+    else:
+        # Si no busques res, mostrem els últims 5 per fer bonic
+        st.info("👆 Escriu alguna cosa per començar. Aquí tens els 5 últims contractes signats a Catalunya:")
+        st.dataframe(df_mestre.head(5), use_container_width=True)
+
+else:
+    st.error("No s'han pogut carregar les dades. Revisa la connexió a internet.")
+
+st.caption("Dades: Transparència Catalunya (API Socrata)")
