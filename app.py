@@ -19,6 +19,7 @@ def netejar_enllac(valor):
 @st.cache_data(ttl=3600)
 def carregar_dades_2026():
     url = "https://analisi.transparenciacatalunya.cat/resource/ybgg-dgi6.json"
+    # Carreguem dades del 2026
     query = "?$where=data_adjudicacio_contracte >= '2026-01-01T00:00:00.000'&$limit=5000"
     try:
         r = requests.get(url + query, timeout=15)
@@ -41,7 +42,9 @@ if not df_any.empty:
     COL_DINERS = 'import_adjudicacio_amb_iva'
     COL_EMPRESA = 'denominacio_adjudicatari'
     COL_LINK = 'enllac_publicacio'
+    COL_DATA = 'data_adjudicacio_contracte'
     
+    # Neteja de dades base
     if COL_LINK in df_any.columns:
         df_any[COL_LINK] = df_any[COL_LINK].apply(netejar_enllac)
     
@@ -66,22 +69,31 @@ if not df_any.empty:
             ).properties(height=300)
             st.altair_chart(grafic, use_container_width=True)
 
-    # --- LÒGICA DE CERCA (NOMÉS EMPRESA) ---
+    # --- LÒGICA DE CERCA (NOMÉS EMPRESA + FILTRES SOL·LICITATS) ---
     if cerca_usuari:
-        # 1. Filtre estricte per columna empresa
+        # Àncora invisible per al salt de pàgina
+        st.markdown('<div id="resultats_ancora"></div>', unsafe_allow_html=True)
+        st.divider()
+        
+        # 1. Filtre inicial per nom d'empresa
         mask = df_any[COL_EMPRESA].astype(str).str.contains(cerca_usuari, case=False, na=False)
         df_res = df_any[mask].copy()
 
-        # Marcatge per a l'scroll
-        st.markdown('<div id="resultats_ancora"></div>', unsafe_allow_html=True)
-        st.divider()
+        # 2. FILTRE DE DATA: Només contractes amb data d'adjudicació
+        if COL_DATA in df_res.columns:
+            # Traiem files on la data és nul·la o text buit
+            df_res = df_res.dropna(subset=[COL_DATA])
+            df_res = df_res[df_res[COL_DATA].astype(str).str.strip() != ""]
+            
+            # 3. ORDENACIÓ: Convertim a datetime per ordenar correctament
+            df_res[COL_DATA] = pd.to_datetime(df_res[COL_DATA], errors='coerce')
+            df_res = df_res.sort_values(by=COL_DATA, ascending=False)
 
         if not df_res.empty:
-            # 2. Comptador de resultats
-            st.success(f"✅ S'han trobat **{len(df_res)}** contractes per a l'empresa: *'{cerca_usuari}'*")
+            st.success(f"✅ S'han trobat **{len(df_res)}** contractes adjudicats per a: *'{cerca_usuari}'*")
             
             mapa_cols = {
-                'data_adjudicacio_contracte': 'Data',
+                COL_DATA: 'Data',
                 'denominacio': 'Títol del Contracte',
                 COL_EMPRESA: 'Empresa',
                 COL_DINERS: 'Import',
@@ -102,43 +114,22 @@ if not df_any.empty:
                 }
             )
 
-            # 3. JavaScript Robust per al Scroll
+            # Intent de scroll JavaScript
             js_scroll = """
             <script>
-                function doScroll() {
-                    const selectors = [
-                        '.main', 
-                        'section.main', 
-                        'div[data-testid="stAppViewContainer"]'
-                    ];
-                    
-                    // Intentem trobar el contenidor principal de Streamlit
-                    let container = null;
-                    for (const s of selectors) {
-                        const el = window.parent.document.querySelector(s);
-                        if (el) { container = el; break; }
+                setTimeout(function() {
+                    const main = window.parent.document.querySelector('section.main');
+                    const target = window.parent.document.getElementById('resultats_ancora');
+                    if (main && target) {
+                        main.scrollTo({ top: target.offsetTop, behavior: 'smooth' });
                     }
-
-                    if (container) {
-                        // Baixem fins al final o fins a una posició alta
-                        container.scrollTo({
-                            top: container.scrollHeight,
-                            behavior: 'smooth'
-                        });
-                    } else {
-                        // Pla B: Scroll de la finestra nativa
-                        window.parent.scrollTo({
-                            top: 2000, 
-                            behavior: 'smooth'
-                        });
-                    }
-                }
-                setTimeout(doScroll, 800); // Temps suficient per carregar la taula
+                }, 800);
             </script>
             """
             components.html(js_scroll, height=0)
 
         else:
-            st.warning(f"No s'ha trobat cap empresa que contingui '{cerca_usuari}'.")
+            st.warning(f"No s'ha trobat cap contracte adjudicat per a '{cerca_usuari}'.")
+
 else:
-    st.error("Error de connexió.")
+    st.error("Error en carregar les dades de la Generalitat.")
