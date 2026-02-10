@@ -7,69 +7,91 @@ import altair as alt
 st.set_page_config(page_title="Monitor 2026", page_icon="📊", layout="wide")
 
 st.title("📊 Monitor de Contractació Pública 2026")
-st.markdown("Dades oficials de la Generalitat de Catalunya en temps real (Dataset: ybgg-dgi6).")
+st.markdown("Dades oficials de la Generalitat de Catalunya (Dataset: ybgg-dgi6).")
 
-# 2. CÀRREGA DE DADES ESTRUCTURAL (EL DASHBOARD)
-# Descarreguem TOTS els contractes del 2026 per fer les estadístiques
-@st.cache_data(ttl=3600) # Guardem això 1 hora perquè no canvia tant ràpid
-def carregar_estadistiques_2026():
+# Variables per facilitar canvis de columnes
+COL_DINERS = 'import_adjudicacio_amb_iva'
+COL_EMPRESA = 'adjudicatari'
+COL_DATA = 'data_adjudicacio_contracte'
+
+# 2. CÀRREGA DE DADES PER AL DASHBOARD (SENSE CERCA)
+@st.cache_data(ttl=3600)
+def carregar_dades_2026():
     url = "https://analisi.transparenciacatalunya.cat/resource/ybgg-dgi6.json"
-    
-    # TRUC: Filtrem només els contractes d'aquest any (des de l'1 de gener de 2026)
-    # Això fa que l'app vagi ràpid i les dades siguin actuals "del que portem d'any"
-    query = "?$where=data_adjudicacio_contracte >= '2026-01-01T00:00:00.000'&$limit=10000"
+    # Filtrem contractes des de l'1 de gener de 2026
+    query = f"?$where={COL_DATA} >= '2026-01-01T00:00:00.000'&$limit=5000"
     
     try:
         r = requests.get(url + query)
         if r.status_code == 200:
             df = pd.DataFrame(r.json())
-            # Netegem els diners immediatament
-            if 'import_adjudicacio_amb_iva' in df.columns:
-                df['import_adjudicacio_amb_iva'] = pd.to_numeric(df['import_adjudicacio_amb_iva'], errors='coerce').fillna(0)
+            if COL_DINERS in df.columns:
+                df[COL_DINERS] = pd.to_numeric(df[COL_DINERS], errors='coerce').fillna(0)
             return df
         return pd.DataFrame()
     except:
         return pd.DataFrame()
 
-# 3. FUNCIÓ DE CERCA ESPECÍFICA (Sota demanda)
-def cercar_empresa(text):
+# 3. FUNCIÓ PER A LA CERCA ESPECÍFICA
+def cercar_empresa_api(text):
     url = "https://analisi.transparenciacatalunya.cat/resource/ybgg-dgi6.json"
-    # Aquesta cerca només s'activa quan l'usuari escriu
-    params = {
-        "$q": text,
-        "$limit": 50,
-        "$order": "data_adjudicacio_contracte DESC"
-    }
+    params = {"$q": text, "$limit": 100}
     try:
         r = requests.get(url, params=params)
         return pd.DataFrame(r.json()) if r.status_code == 200 else pd.DataFrame()
     except:
         return pd.DataFrame()
 
-# --- PART 1: EL CERCADOR (A DALT DE TOT) ---
-col_cerca, col_buit = st.columns([2,1])
-with col_cerca:
-    text_cerca = st.text_input("🔍 Investiga una empresa:", placeholder="Escriu aquí per activar el cercador (Ex: Indra, Securitas, Neteja...)")
+# --- INTERFÍCIE ---
 
-# --- PART 2: EL GRÀFIC I EL TOTAL (SEMPRE VISIBLES A SOTA) ---
-with st.spinner("Calculant la despesa del 2026..."):
-    df_2026 = carregar_estadistiques_2026()
+# A. CERCADOR (A dalt, però no busca res fins que s'escriu)
+cerca_usuari = st.text_input("🔍 Investiga una empresa o servei:", placeholder="Escriu aquí (Ex: Indra, Neteja, Sòl...)")
 
-if not df_2026.empty:
+# B. DASHBOARD GENERAL (Sempre visible a sota)
+st.divider()
+with st.spinner("Actualitzant dades del 2026..."):
+    df_any = carregar_dades_2026()
+
+if not df_any.empty:
+    # 1. TOTAL GASTAT
+    total_2026 = df_any[COL_DINERS].sum()
+    st.markdown(f"### 💰 Total invertit a Catalunya el 2026: <span style='color:#1E88E5'>{total_2026:,.2f} €</span>", unsafe_allow_html=True)
+    
+    # 2. GRÀFIC TOP 5
+    if COL_EMPRESA in df_any.columns:
+        top5 = df_any.groupby(COL_EMPRESA)[COL_DINERS].sum().reset_index()
+        top5 = top5.sort_values(by=COL_DINERS, ascending=False).head(5)
+        
+        st.write("🏆 **Empreses amb més volum d'adjudicació enguany:**")
+        
+        grafic = alt.Chart(top5).mark_bar(cornerRadiusEnd=4).encode(
+            x=alt.X(f'{COL_DINERS}:Q', title='Euros (€)'),
+            y=alt.Y(f'{COL_EMPRESA}:N', sort='-x', title=None),
+            tooltip=[COL_EMPRESA, alt.Tooltip(COL_DINERS, format=',.2f')]
+        ).properties(height=300)
+        
+        st.altair_chart(grafic, use_container_width=True)
+
+# C. RESULTATS DE LA CERCA (S'activa només si l'usuari posa un nom)
+if cerca_usuari:
     st.divider()
+    st.subheader(f"📂 Resultats de la cerca: '{cerca_usuari}'")
     
-    # A. EL TOTAL GASTAT (KPI)
-    total_any = df_2026['import_adjudicacio_amb_iva'].sum()
-    st.subheader(f"💰 Despesa total en contractes aquest 2026: :blue[{total_any:,.2f} €]")
-    
-    # B. EL GRÀFIC (TOP 5 EMPRESES)
-    # Agrupem per empresa i sumem els diners
-    if 'adjudicatari' in df_2026.columns:
-        ranking = df_2026.groupby('adjudicatari')['import_adjudicacio_amb_iva'].sum().reset_index()
-        ranking = ranking.sort_values(by='import_adjudicacio_amb_iva', ascending=False).head(5)
+    with st.spinner("Rastrejant contractes específics..."):
+        df_res = cercar_empresa_api(cerca_usuari)
         
-        st.write("🏆 **Top 5 Empreses amb més adjudicacions enguany:**")
-        
-        # Creem un gràfic de barres bonic amb Altair
-        chart = alt.Chart(ranking).mark_bar().encode(
-            x=alt.X('import_adjudicacio_amb_
+        if not df_res.empty:
+            if COL_DINERS in df_res.columns:
+                df_res[COL_DINERS] = pd.to_numeric(df_res[COL_DINERS], errors='coerce')
+            
+            # Columnes que volem ensenyar
+            cols_ok = [c for c in [COL_DATA, 'denominacio', COL_EMPRESA, COL_DINERS] if c in df_res.columns]
+            
+            st.dataframe(
+                df_res[cols_ok],
+                use_container_width=True,
+                hide_index=True,
+                column_config={COL_DINERS: st.column_config.NumberColumn("Import", format="%.2f €")}
+            )
+        else:
+            st.info("No s'han trobat contractes per aquesta cerca.")
